@@ -1,0 +1,14 @@
+services:
+  api:
+    build: ./api
+    restart: unless-stopped
+    environment:
+      MODEL_PATH: /models/${MODEL_FILE:-codegemma-1.1-7b-it-f16.gguf}
+      N_GPU_LAYERS: ${N_GPU_LAYERS:-0}
+      N_CTX: ${N_CTX:-4096}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./api/app:/code/app
+      - ./models:/models:ro
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

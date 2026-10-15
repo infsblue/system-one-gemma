@@ -4,52 +4,88 @@
 
 # system-one-gemma
 
-An open-source Python engine for fast, deterministic, "no-chat" System 1 decision-making and guardrails using Gemma.
+An open-source, local Python engine for schema-constrained System 1 decisions and guardrails using Gemma.
 
 ## About
 
-**system-one-gemma** is a lightweight, local-first decision engine inspired by System 1 cognitive processing. Designed to run entirely on local hardware, it bypasses traditional multi-turn conversational chat LLMs to deliver deterministic, type-safe decisions, classifications, and confidence scoring in milliseconds.
+**system-one-gemma** is a lightweight, local-first decision engine inspired by System 1 cognitive processing. It uses single-pass model inference to return schema-constrained decisions, classifications, and raw token likelihoods without sending context to third-party cloud APIs. Output constraints and deterministic sampling do not guarantee that a model's decision is correct.
 
-By leveraging Google's **Gemma 1.1 2B IT** model via local GGUF inference, constrained sampling (grammars/JSON Schema), and raw token probability evaluation (`logprobs`), it acts as an ultra-fast guardrail, router, and classification layer without sending context to third-party cloud APIs.
+By leveraging Google's **CodeGemma 1.1 7B IT** model via local GGUF inference, constrained sampling (grammars/JSON Schema), and raw token probability evaluation (`logprobs`), it acts as a local guardrail, router, and classification layer without sending context to third-party cloud APIs.
 
 ## Model
 
-* **Model Name:** Gemma 1.1 2B IT (google/gemma-1.1-2b-it-GGUF)
-* **Official Weights File:** `2b_it_v1p1.gguf` (~10 GB, FP32/F16 precision)
-* **Execution Engine:** Local execution via `llama-cpp-python` with full or partial GPU VRAM offloading
+* **Model Name:** CodeGemma 1.1 7B IT
+* **Weights File:** `models/codegemma-1.1-7b-it-f16.gguf` (~16 GB, F16), mounted read-only into the container (override with `MODEL_FILE` in `.env`)
+* **Execution Engine:** `llama-cpp-python` (CPU build) inside Docker
 * **Licensing:** Governed by Google Gemma Terms of Use
 
 ## Requirements
 
-### Hardware Specs
+Everything else (Python, dependencies, llama.cpp) is packaged in the Docker image.
 
-* **CPU:** 6-core x86_64 Processor (e.g., Intel Core i7-10750H)
-* **RAM:** 16 GB minimum (32 GB+ recommended for large context buffers)
-* **GPU:** NVIDIA Dedicated GPU with 6 GB VRAM (e.g., GeForce RTX 2060) or higher
+### Hardware Specs (minimum to run the model on CPU)
+
+* **CPU:** any x86_64 CPU (4+ cores recommended; a call takes seconds)
+* **RAM:** 24 GB available to Docker (~16 GB weights + context and logits buffers)
+* **Disk:** ~17 GB for the model file plus the image
 
 ### Software Dependencies
 
-* **OS:** Linux (Debian 13 / Ubuntu 22.04+ recommended)
-* **Python Version:** Python 3.10+
-* **Drivers:** NVIDIA Proprietary Drivers + CUDA Toolkit (`nvidia-smi` operational)
+* **Docker** with Docker Compose v2
 
-### Python Dependencies (`requirements.txt`)
+### Python Dependencies (inside the image, `api/requirements.txt`)
 
-* llama-cpp-python>=0.2.75
+* llama-cpp-python>=0.3.0
 * pydantic>=2.0.0
-* python-dotenv>=1.0.1
+* fastapi>=0.110
+* uvicorn[standard]>=0.29
 
 ## Decision Primitives & Capabilities
 
-`system-one-gemma` exposes 3 deterministic decision primitives that enforce structured JSON outputs while extracting mathematical confidence scores directly from model logprobs (`math.exp(logprob)`).
+`api/app/engine.py` implements three decision primitives. Each uses JSON Schema-constrained decoding,
+greedy sampling, and a fixed seed, and returns a `DecisionResult` with the selected value,
+its normalized model confidence, and the number of output tokens used for that value.
+
+The reported confidence is the probability of the chosen first decision token, renormalized
+over the tokens that can start an allowed value (e.g. `true`/`false`), because raw logprobs
+are taken before grammar masking. For multi-token values (long category names) this is a
+first-token approximation. It is **not a calibrated probability that the answer is correct** and should not be used as a
+standalone safety guarantee. Calibrating confidence requires a representative labeled
+evaluation set, which is not included here.
+
+### Running the API
+
+The engine is served by FastAPI (`api/app`) in Docker:
+
+```bash
+cp .env.example .env        # optional overrides
+docker compose up --build   # model is mounted read-only from ./models
+```
+
+Open **http://localhost:8000/docs** (Swagger). Endpoints:
+
+| Group | Endpoint | What it does |
+|---|---|---|
+| Tests - Noul | `POST /tests/noul/positive`, `/tests/noul/negative` | Destructive SQL is flagged / harmless SQL is not |
+| Tests - Choice | `POST /tests/choice/positive`, `/tests/choice/negative` | In-domain request routed to `READ_ONLY_SQL` / unrelated request to `OFF_TOPIC` |
+| Tests - Score | `POST /tests/score/positive`, `/tests/score/negative` | `DROP`/`TRUNCATE` scores >= 4 / a `SELECT` scores <= 2 |
+| Try it yourself | `POST /noul`, `/choice`, `/score` | Send your own context |
+| System | `GET /health` | Status and model name |
+
+The test endpoints need no input: the material lives in `api/app/scenarios.py`, and each
+response shows what was sent, what was expected, what the model answered, and pass/fail.
+The tests report real model behavior; a FAIL is a legitimate outcome, not an API error.
+
+The model's judgment remains probabilistic: validate safety-critical decisions
+with deterministic rules and/or human review.
 
 ### 1. `Noul` (Probabilistic Boolean Guardrail)
 
-Evaluates a single state against a binary question and calculates the exact model confidence.
+Evaluates a state against a binary question and returns a boolean decision with raw token likelihood.
 
 * **Function:** Evaluates inputs (such as user prompts or generated SQL) against binary safety rules.
 * **Example Use Case:** Verifying whether a query string contains malicious input or SQL injection attempts before sending it to a database.
-* **Output:** Returns a boolean value (`True`/`False`) paired with a calibrated confidence score (e.g., `False` with 99.4% confidence).
+* **Output:** Returns a boolean value (`true`/`false`) with the raw likelihood of the generated decision tokens.
 
 ### 2. `Choice` (Constrained Categorical Selection)
 
@@ -57,30 +93,30 @@ Forces the engine to pick exactly one option from a predefined list without conv
 
 * **Function:** Maps unstructured incoming text to a fixed category or execution path.
 * **Example Use Case:** Classifying user request intent (e.g., routing requests between read-only SQL execution, schema inspection, data mutation, or off-topic queries).
-* **Output:** Returns the selected category string alongside the model's categorical confidence (e.g., `READ_ONLY_SQL` with 96.8% confidence).
+* **Output:** Returns the selected category string with the raw likelihood of the generated decision tokens.
 
 ### 3. `Score` (Discretization & Ordinal Rating)
 
-Maps unstructured inputs onto a strict numerical scale with probability validation.
+Maps unstructured inputs onto a strict numerical scale with range validation.
 
 * **Function:** Evaluates qualitative inputs and converts them into discrete numerical values within a bounded range.
 * **Example Use Case:** Assessing the risk severity level of a operation on a scale from 1 (safe) to 5 (critical mutation).
-* **Output:** Returns an integer score within the specified bounds along with the calculated statistical confidence (e.g., Risk Level `5` with 98.1% confidence).
+* **Output:** Returns an integer score within the specified bounds with the raw likelihood of the generated decision tokens.
 
 ## Acceptance Criteria
 
 To ensure reliable, low-latency, and production-ready operation, the pipeline enforces the following criteria:
 
-1. **Zero-Chat Determinism:**
-* Enforces strict C++ GBNF grammars / JSON Schemas via `llama-cpp-python` to prevent free-text or conversational output.
+1. **Constrained Output:**
+* Enforces JSON Schema constraints through `llama-cpp-python` to restrict decisions to the requested type, categories, or numeric range.
 
 
-2. **Real-Calibrated Confidence:**
-* Calculates output confidence scores using token-level log probabilities rather than self-reported LLM verbalization.
+2. **Token Likelihood:**
+* Reports the likelihood of the generated decision value using token-level log probabilities. This is not calibrated confidence; calibration against labeled data is future work.
 
 
-3. **Sub-100ms Execution Bounds:**
-* Optimized for single-pass evaluation using Gemma 1.1 2B IT, achieving low-latency decision-making on 6 GB VRAM GPUs.
+3. **Local Inference:**
+* Runs on the configured local CPU/GPU. Latency depends on hardware, model configuration, and input length; sub-100ms execution is not guaranteed.
 
 
 4. **Sandwich Pattern Integration:**
@@ -103,9 +139,10 @@ All direct dependencies used in this project are compatible with permissive open
 
 * `llama-cpp-python`: MIT License
 * `pydantic`: MIT License
-* `python-dotenv`: BSD 3-Clause License
+* `fastapi`: MIT License
+* `uvicorn`: BSD 3-Clause License
 
 ### Model Weights Notice
 
 * **Gemma:** Model weights, parameters, and architecture belong to Google LLC and are governed by the Gemma Terms of Use and Gemma Prohibited Use Policy.
-* This repository does not host, bundle, or re-distribute model weights. Users must separately accept Google's terms and acquire `.gguf` files directly from official sources (`google/gemma-1.1-2b-it-GGUF`).
+* This repository does not host, bundle, or re-distribute model weights. Users must separately accept Google's terms and acquire `.gguf` files directly from official sources (CodeGemma 1.1 7B IT).
