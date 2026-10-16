@@ -2,7 +2,7 @@
 > **Proof of Concept — under constant change and research.**
 > This repository is an early-stage proof of concept and is evolving continuously. The documentation below describes the **initial requirements** of the project and may not reflect the current state of the code, the model, or the setup. Dependencies, endpoints, hardware requirements, and acceptance criteria may differ from what is written here. When in doubt, the source code is the reference.
 >
-> This project uses a System 1-style, single-pass, schema-constrained, deterministic, short-form token-generative architecture. It is designed to produce fast constrained decisions, not guaranteed-correct answers. Outputs are probabilistic and may be wrong; validate critical decisions with deterministic rules and/or human review.
+> This project uses a System-1-inspired, single-pass, schema-constrained, deterministic, short-form token-generative architecture. It is designed to produce fast constrained decisions, not guaranteed-correct answers. Outputs are probabilistic and may be wrong; validate critical decisions with deterministic rules and/or human review.
 
 # system-one-gemma
 
