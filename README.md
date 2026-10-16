@@ -6,7 +6,7 @@
 
 # system-one-gemma
 
-An open-source, local Python engine for schema-constrained System 1 decisions and guardrails using Gemma.
+An open-source, local Python engine for schema-constrained System-1-inspired decisions and guardrails using Gemma.
 
 ## About
 
